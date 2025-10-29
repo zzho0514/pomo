@@ -1,0 +1,8 @@
+{
+  "work_min": 25,
+  "short_break_min": 5,
+  "long_break_min": 15,
+  "long_every": 4,
+  "default_tag": "Reading",
+  "theme": "light"
+}

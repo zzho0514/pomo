@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Virtual env
+.venv/
+
+# OS junk
+.DS_Store
+
+# VS Code
+.vscode/
+
+# data files
+data/*
+!data/sessions.csv
+!data/goals.json
+!data/milestones.json
+!data/config.json
