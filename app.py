@@ -6,7 +6,8 @@ from datetime import datetime, date, timedelta
 from timer import Timer
 from storage import (
     ensure_data_files, load_config, save_config,
-    append_session, load_sessions
+    append_session, load_sessions,
+    load_goals, save_goals
 )
 from stats import weekly_totals_by_tag, monthly_totals_by_tag, week_bounds
 
@@ -35,11 +36,12 @@ class App:
         # main window
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("860x640")
+        self.root.geometry("960x880")
 
         #----- Data/Configuration Initialization -----
         ensure_data_files(DEFAULT_CONFIG)
         self.config = load_config()
+        self.goals = load_goals()  # {"weekly": {...}, "monthly": {...}}
         # tags from config or default
         self.tags = list(self.config.get("tags", DEFAULT_CONFIG["tags"])) or list(DEFAULT_CONFIG["tags"])
         self.sessions = load_sessions()
@@ -82,6 +84,7 @@ class App:
         tip.pack(side="bottom", pady=6)
 
         self._refresh_dashboard()
+        self._refresh_goals_panel()
 
     #----- timer UI -----
     def _build_timer_tab(self):
@@ -158,7 +161,7 @@ class App:
             textvariable=self.last_session_var,
             justify="left",
             anchor="w",
-            wraplength=780 # approx 80% of window width
+            wraplength=800 # approx 80% of window width
         ).pack(fill="x", anchor="w")
 
     #----- dashboard UI -----
@@ -178,6 +181,17 @@ class App:
         self.btn_next = ttk.Button(ctrl, text="Next ▶", command=self._next_period)
         self.btn_next.pack(side="right", padx=4)
         self.btn_prev.pack(side="right", padx=4)
+
+        # goal management
+        gbar = tk.Frame(self.tab_dash)
+        gbar.pack(fill="x", padx=10, pady=(0,4))
+        tk.Label(gbar, text="Goals", font=("Segoe UI", 11, "bold")).pack(side="left")
+
+        self.btn_manage_goals = ttk.Button(gbar, text="Manage Goals", command=self._open_goals_dialog)
+        self.btn_manage_goals.pack(side="right")
+            # goals container
+        self.goals_container = tk.Frame(self.tab_dash)
+        self.goals_container.pack(fill="x", padx=10, pady=(0,4))
         
         # label
         self.range_label_var = tk.StringVar(value="")
@@ -435,6 +449,7 @@ class App:
         self._last_run_start_ts = None
 
         self._refresh_dashboard()
+        self._refresh_goals_panel()
 
     #----- Dashboard -----
     def _prev_period(self):
@@ -448,6 +463,7 @@ class App:
                 m -= 1
             self._dash_year, self._dash_month = y, m
         self._refresh_dashboard()
+        self._refresh_goals_panel()
 
     def _next_period(self):
         if self.period_var.get() == "Week":
@@ -460,6 +476,7 @@ class App:
                 m += 1
             self._dash_year, self._dash_month = y, m
         self._refresh_dashboard()
+        self._refresh_goals_panel()
 
     def _refresh_dashboard(self):
         # load sessions
@@ -501,7 +518,132 @@ class App:
         
         self.fig.tight_layout()
         self.canvas.draw()
+        self._refresh_goals_panel()
 
+    #----- Goals Management -----
+    def _current_period_totals(self) -> tuple[dict[str, float], str]:
+        """
+        returns (totals: {tag: minutes(float)}, label: str) for current period
+        """
+        from stats import weekly_totals_by_tag, monthly_totals_by_tag
+        if self.period_var.get() == "Week":
+            totals, label = weekly_totals_by_tag(self.sessions, self._dash_ref_date)
+        else:
+            totals, label = monthly_totals_by_tag(self.sessions, self._dash_year, self._dash_month)
+        return totals, label
+
+    def _refresh_goals_panel(self):
+        """refresh progress bars"""
+        # clear existing
+        for w in self.goals_container.winfo_children():
+            w.destroy()
+
+        totals, _ = self._current_period_totals()  # {tag: minutes(float)}
+        period = self.period_var.get()  # "Week" or "Month"
+        goal_map = self.goals["weekly" if period == "Week" else "monthly"]  # dict[tag] = minutes(int)
+
+        # header
+        header = tk.Frame(self.goals_container)
+        header.pack(fill="x", pady=(2,2))
+        tk.Label(header, text="Tag", width=16, anchor="w").pack(side="left")
+        tk.Label(header, text="Progress", anchor="w").pack(side="left", padx=(6,0))
+
+        tag_set = set(goal_map.keys()) | set(totals.keys()) | set(self.tags)
+        if not tag_set:
+            tk.Label(self.goals_container, text="No tags / goals yet. Click 'Manage Goals' to add.",
+                    fg="#666").pack(anchor="w")
+            return
+
+        # rows for each tag
+        for tag in sorted(tag_set):
+            row = tk.Frame(self.goals_container)
+            row.pack(fill="x", pady=2)
+
+            tk.Label(row, text=tag, width=16, anchor="w").pack(side="left")
+
+            # done vs goal
+            done_min = float(totals.get(tag, 0.0))
+            goal_min = int(goal_map.get(tag, 0))  # 0 means no goal
+
+            # progress bar 
+            inner = tk.Frame(row)
+            inner.pack(side="left", fill="x", expand=True)
+
+            if goal_min > 0:
+                bar = ttk.Progressbar(inner, orient="horizontal", length=300, mode="determinate",
+                                    maximum=goal_min, value=min(done_min, goal_min))
+                bar.pack(side="left", padx=(0,6))
+                pct = 100.0 * done_min / goal_min
+                tk.Label(inner, text=f"{done_min:.1f} / {goal_min} min  ({pct:.0f}%)",
+                        width=24, anchor="w").pack(side="left")
+            else:
+                # no goal set
+                tk.Label(inner, text=f"{done_min:.1f} min (no goal)", anchor="w").pack(side="left")
+
+    # goals dialog
+    def _open_goals_dialog(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("Manage Goals")
+        dlg.geometry("520x420")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        nb = ttk.Notebook(dlg)
+        frm_week = ttk.Frame(nb)
+        frm_month = ttk.Frame(nb)
+        nb.add(frm_week, text="Weekly")
+        nb.add(frm_month, text="Monthly")
+        nb.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # build table function
+        def build_table(frame, period_key: str):
+            # table
+            head = tk.Frame(frame); head.pack(fill="x", pady=(2,4))
+            tk.Label(head, text="Tag", width=18, anchor="w").pack(side="left")
+            tk.Label(head, text="Target (min)", anchor="w").pack(side="left")
+
+            rows = []
+
+            # rows
+            period_map = dict(self.goals.get(period_key, {}))
+            tag_set = set(self.tags) | set(period_map.keys())
+
+            body = tk.Frame(frame); body.pack(fill="both", expand=True)
+            for tag in sorted(tag_set):
+                r = tk.Frame(body); r.pack(fill="x", pady=2)
+                tk.Label(r, text=tag, width=18, anchor="w").pack(side="left")
+                v = tk.StringVar(value=str(period_map.get(tag, "")))
+                e = ttk.Entry(r, textvariable=v, width=12)
+                e.pack(side="left")
+                rows.append((tag, v))
+
+            # save button
+            def on_save():
+                # collect and save
+                new_map: dict[str, int] = {}
+                for tag, var in rows:
+                    s = var.get().strip()
+                    if not s:
+                        continue
+                    try:
+                        mins = int(float(s))
+                    except ValueError:
+                        mins = 0
+                    if mins > 0:
+                        new_map[tag] = mins
+                self.goals[period_key] = new_map
+                try:
+                    save_goals(self.goals)
+                    messagebox.showinfo("Saved", f"{period_key.capitalize()} goals saved.")
+                except Exception as e:
+                    messagebox.showwarning("Save failed", str(e))
+                self._refresh_goals_panel()
+
+            btnbar = tk.Frame(frame); btnbar.pack(fill="x", pady=(6,4))
+            ttk.Button(btnbar, text="Save", command=on_save).pack(side="right")
+
+        build_table(frm_week, "weekly")
+        build_table(frm_month, "monthly")
 
 
 def main():
