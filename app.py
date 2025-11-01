@@ -5,7 +5,7 @@ import time
 from datetime import datetime, date
 from timer import Timer
 
-APP_TITLE = "Pomotask (MVP - Phase 2)"
+APP_TITLE = "Pomotask (MVP - Phase 2.1)"
 
 DEFAULT_MIN = 25 # default minutes for Pomodoro
 DEFAULT_SEC = 0 # default seconds for Pomodoro
@@ -18,13 +18,17 @@ class App:
         # main window
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("620x520")
+        self.root.geometry("720x600")
 
         # State variables
         self.sessions = [] # list[dict]  # stored sessions
         self._current_start_ts = None    # current session start timestamp
         self._current_tag = None         # current session tag
         self._current_note = ""          # current session note
+
+        self._last_run_start_ts = None     # timestamp of last run start
+        self._accum_active_s = 0           # accumulated active seconds
+        self._session_active = False       # is session currently active (including pauses)
 
         #----- UI components -----
         # title
@@ -90,7 +94,13 @@ class App:
 
         # Last Session Preview
         self.last_session_var = tk.StringVar(value="(no session yet)")
-        tk.Label(prev_box, textvariable=self.last_session_var, justify="left").pack(anchor="w")
+        tk.Label(
+            prev_box,
+            textvariable=self.last_session_var,
+            justify="left",
+            anchor="w",
+            wraplength=560 # approx 80% of window width
+        ).pack(fill="x", anchor="w")
 
         # timer
         self.timer = Timer(on_tick=self._on_tick, on_finish=self._on_timer_finished)
@@ -138,6 +148,18 @@ class App:
         self.time_var.set(f"{mm:02d}:{ss:02d}")
 
     def _on_timer_finished(self) -> None:
+        '''
+        The countdown ended naturally
+        calculate active seconds
+        record a session
+        show messagebox
+        reset timer
+        '''
+        if self._session_active and self._last_run_start_ts is not None:
+            now = self._now_ts()
+            self._accum_active_s += int(round(now - self._last_run_start_ts))
+            self._last_run_start_ts = None
+
         self._finalize_session(auto=True)
         self._set_buttons_state(running=False)
         try:
@@ -163,23 +185,46 @@ class App:
     def on_start(self):
         if self.timer.running:
             return
-        # Captures current tag and note when Start is pressed
-        self._current_tag = self.tag_var.get().strip() or "Other"
-        self._current_note = self.note_text.get("1.0", "end").strip()
-        self._current_start_ts = self._now_ts()
+        
+        now = self._now_ts()
+        if not self._session_active:
+        # Captures current tag and note when first Start is pressed
+            self._current_tag = self.tag_var.get().strip() or "Other"
+            self._current_note = self.note_text.get("1.0", "end").strip()
+            self._current_start_ts = now
+            self._accum_active_s = 0
+            self._last_run_start_ts = now
+            self._session_active = True
+        else:
+            # Resuming from pause
+            if self._last_run_start_ts is None:
+                self._last_run_start_ts = now
 
         self.timer.start(self.root)
         self._set_buttons_state(running=True)
 
 
     def on_pause(self):
-        self.timer.pause()
+        if self.timer.running:
+            self.timer.pause()
+            now = self._now_ts()
+            if self._last_run_start_ts is not None:
+                self._accum_active_s += int(round(now - self._last_run_start_ts))
+                self._last_run_start_ts = None
         self._set_buttons_state(running=False)
 
     def on_finish(self):
         # Manual session completion
         if not self._current_start_ts:
             return
+        
+        if self.timer.running:
+            self.timer.pause()
+            now = self._now_ts()
+            if self._last_run_start_ts is not None:
+                self._accum_active_s += int(round(now - self._last_run_start_ts))
+                self._last_run_start_ts = None
+
         self._finalize_session(auto=False)
         self.timer.reset(seconds=self.get_preset_seconds())
         self._on_tick(self.timer.remaining)
@@ -189,9 +234,14 @@ class App:
         self.timer.reset(seconds=self.get_preset_seconds())
         self._on_tick(self.timer.remaining)
         self._set_buttons_state(running=False)
+
+        self._session_active = False
         self._current_start_ts = None
         self._current_tag = None
         self._current_note = ""
+        self._accum_active_s = 0
+        self._last_run_start_ts = None
+        self.note_text.delete("1.0", "end")
 
     def _set_buttons_state(self, running: bool):
         # start disable when running
@@ -211,9 +261,13 @@ class App:
         Updates the "Last Session" preview display
         Clears the session snapshot
         """
+        if not self._session_active:
+            return
+
+        duration_s = max(0, int(self._accum_active_s))
         end_ts = self._now_ts()
         start_ts = self._current_start_ts or end_ts
-        duration_s = max(0, int(round(end_ts - start_ts)))
+
         session = {
             "start_ts": int(start_ts),
             "end_ts": int(end_ts),
@@ -224,16 +278,30 @@ class App:
             "ended_by": "auto" if auto else "manual"
         }
         self.sessions.append(session)
+      
         # Update last session preview
+        def _clean_one_line(text: str, max_len: int = 120) -> str:
+            t = " ".join((text or "").split())  # collapse whitespace
+            return (t[: max_len - 1] + "…") if len(t) > max_len else t
+
+        note_line = _clean_one_line(session["note"])
+
         mm, ss = divmod(duration_s, 60)
-        preview = (f"- Tag: {session['tag']}\n"
-                   f"- Duration: {mm}m {ss}s\n"
-                   f"- Date: {session['date']}  ({session['ended_by']})")
+        preview = (
+            f"- Tag: {session['tag']}\n"
+            f"- Duration: {mm}m {ss}s\n"
+            f"- Date: {session['date']}  ({session['ended_by']})\n"
+            f"- Note: {note_line if note_line else '(empty)'}"
+        )
         self.last_session_var.set(preview)
+
         # Clear current session snapshot
+        self._session_active = False
         self._current_start_ts = None
         self._current_tag = None
         self._current_note = ""
+        self._accum_active_s = 0
+        self._last_run_start_ts = None
 
 
 def main():
