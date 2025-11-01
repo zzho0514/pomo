@@ -2,14 +2,19 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import time
-from datetime import datetime
+from datetime import datetime, date, timedelta
 from timer import Timer
 from storage import (
     ensure_data_files, load_config, save_config,
     append_session, load_sessions
 )
+from stats import weekly_totals_by_tag, monthly_totals_by_tag, week_bounds
 
-APP_TITLE = "Pomotask (MVP - Phase 3)"
+from matplotlib.figure import Figure
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+
+APP_TITLE = "Pomotask (MVP - Phase 4)"
 
 # Default Settings
 DEFAULT_CONFIG = {
@@ -30,17 +35,15 @@ class App:
         # main window
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("720x600")
+        self.root.geometry("860x640")
 
         #----- Data/Configuration Initialization -----
         ensure_data_files(DEFAULT_CONFIG)
         self.config = load_config()
         # tags from config or default
-        self.tags = list(self.config.get("tags", DEFAULT_CONFIG["tags"]))
-        if not self.tags:
-            self.tags = list(DEFAULT_CONFIG["tags"])
-
-        self.sessions = load_sessions()        
+        self.tags = list(self.config.get("tags", DEFAULT_CONFIG["tags"])) or list(DEFAULT_CONFIG["tags"])
+        self.sessions = load_sessions()
+      
 
         #----- State variables ----- 
         self._current_start_ts = None    # current session start timestamp
@@ -51,35 +54,63 @@ class App:
         self._accum_active_s = 0           # accumulated active seconds
         self._session_active = False       # is session currently active (including pauses)
 
-        #----- UI components -----
+        #----- notebook (timer / dashboard) -----
+        self.nb = ttk.Notebook(root)
+        self.tab_timer = ttk.Frame(self.nb)
+        self.tab_dash  = ttk.Frame(self.nb)
+        self.nb.add(self.tab_timer, text="Timer")
+        self.nb.add(self.tab_dash,  text="Dashboard")
+        self.nb.pack(fill="both", expand=True)
+
+        #----- Timer Tab -----
+        self._build_timer_tab()
+        #----- Dashboard Tab -----
+        self._build_dashboard_tab()
+
+        #----- initialize timer -----
+        self.timer = Timer(on_tick=self._on_tick, on_finish=self._on_timer_finished)
+        self.timer.set_seconds(self.get_preset_seconds())
+        self._on_tick(self.timer.remaining)
+
+        # Preset changes
+        self.min_var.trace_add("write", self._on_preset_changed)
+        self.sec_var.trace_add("write", self._on_preset_changed)
+
+        # tip label
+        tip = tk.Label(root, text="Space: Start/Pause   Enter: Finish   Esc: Reset",
+                       font=("Segoe UI", 9), fg="#666")
+        tip.pack(side="bottom", pady=6)
+
+        self._refresh_dashboard()
+
+    #----- timer UI -----
+    def _build_timer_tab(self):
         # title
-        title = tk.Label(root, text="Pomotask", font=("Segoe UI", 22, "bold"))
+        title = tk.Label(self.tab_timer, text="Pomotask", font=("Segoe UI", 22, "bold"))
         title.pack(pady=(16, 8))
 
         # time display
         self.time_var = tk.StringVar(value=f"{DEFAULT_MIN:02d}:{DEFAULT_SEC:02d}")
-        self.time_label = tk.Label(root, textvariable=self.time_var,
-                                   font=("Consolas", 52, "bold"))
+        self.time_label = tk.Label(self.tab_timer, textvariable=self.time_var,
+                                font=("Consolas", 52, "bold"))
         self.time_label.pack(pady=6)
 
         # Time Preset Controls
-        pfrm = tk.Frame(root)
+        pfrm = tk.Frame(self.tab_timer)
         pfrm.pack(pady=8)
-
         tk.Label(pfrm, text="Minutes:").grid(row=0, column=0, sticky="e", padx=(0, 6))
         self.min_var = tk.IntVar(value=DEFAULT_MIN)
         self.min_spin = tk.Spinbox(pfrm, from_=0, to=180, width=4,
-                                   textvariable=self.min_var, font=("Segoe UI", 12))
+                                textvariable=self.min_var, font=("Segoe UI", 12))
         self.min_spin.grid(row=0, column=1, padx=(0, 12))
-
         tk.Label(pfrm, text="Seconds:").grid(row=0, column=2, sticky="e", padx=(0, 6))
         self.sec_var = tk.IntVar(value=DEFAULT_SEC)
         self.sec_spin = tk.Spinbox(pfrm, from_=0, to=59, width=4,
-                                   textvariable=self.sec_var, font=("Segoe UI", 12))
+                                textvariable=self.sec_var, font=("Segoe UI", 12))
         self.sec_spin.grid(row=0, column=3)
 
         # tag and notes
-        cfrm = tk.LabelFrame(root, text="Session Meta", padx=10, pady=8)
+        cfrm = tk.LabelFrame(self.tab_timer, text="Session Meta", padx=10, pady=8)
         cfrm.pack(padx=10, pady=10, fill="x")
 
         tk.Label(cfrm, text="Tag:").grid(row=0, column=0, sticky="e", padx=(0, 6))
@@ -100,7 +131,7 @@ class App:
         self.note_text.grid(row=1, column=1, columnspan=3, sticky="w", pady=(8,0))
 
         # buttons
-        bfrm = tk.Frame(root)
+        bfrm = tk.Frame(self.tab_timer)
         bfrm.pack(pady=12)
         self.btn_start = ttk.Button(bfrm, text="Start", command=self.on_start)
         self.btn_pause = ttk.Button(bfrm, text="Pause", command=self.on_pause, state="disabled")
@@ -118,7 +149,7 @@ class App:
         self.root.bind("<Return>", lambda e: self.on_finish() if self.timer.running else None)  # Enter finish
         
         # Last Session Preview
-        prev_box = tk.LabelFrame(root, text="Last Session", padx=10, pady=8)
+        prev_box = tk.LabelFrame(self.tab_timer, text="Last Session", padx=10, pady=8)
         prev_box.pack(padx=10, pady=8, fill="both", expand=False)
         
         self.last_session_var = tk.StringVar(value="(no session yet)")
@@ -127,24 +158,40 @@ class App:
             textvariable=self.last_session_var,
             justify="left",
             anchor="w",
-            wraplength=560 # approx 80% of window width
+            wraplength=780 # approx 80% of window width
         ).pack(fill="x", anchor="w")
 
-        # timer
-        self.timer = Timer(on_tick=self._on_tick, on_finish=self._on_timer_finished)
-
-        # initialize timer with default minutes
-        self.timer.set_seconds(self.get_preset_seconds())
-        self._on_tick(self.timer.remaining)
-
-        # change minute, update timer
-        self.min_var.trace_add("write", self._on_preset_changed)
-        self.sec_var.trace_add("write", self._on_preset_changed)
-
-        # tip label
-        tip = tk.Label(root, text="Space: Start/Pause   Enter: Finish   Esc: Reset",
-                       font=("Segoe UI", 9), fg="#666")
-        tip.pack(side="bottom", pady=8)
+    #----- dashboard UI -----
+    def _build_dashboard_tab(self):
+        ctrl = tk.Frame(self.tab_dash)
+        ctrl.pack(fill="x", padx=10, pady=8)
+        # week/month switch
+        tk.Label(ctrl, text="Period:").pack(side="left")
+        self.period_var = tk.StringVar(value="Week")
+        ttk.Radiobutton(ctrl, text="Week", variable=self.period_var, value="Week",
+                        command=self._refresh_dashboard).pack(side="left", padx=6)
+        ttk.Radiobutton(ctrl, text="Month", variable=self.period_var, value="Month",
+                        command=self._refresh_dashboard).pack(side="left", padx=6)
+        
+        # next/prev period
+        self.btn_prev = ttk.Button(ctrl, text="◀ Prev", command=self._prev_period)
+        self.btn_next = ttk.Button(ctrl, text="Next ▶", command=self._next_period)
+        self.btn_next.pack(side="right", padx=4)
+        self.btn_prev.pack(side="right", padx=4)
+        
+        # label
+        self.range_label_var = tk.StringVar(value="")
+        tk.Label(self.tab_dash, textvariable=self.range_label_var,
+                 font=("Segoe UI", 12, "bold")).pack(pady=(0,4))
+        # matplotlib figure
+        self.fig = Figure(figsize=(7.8, 4.8), dpi=100)
+        self.ax = self.fig.add_subplot(111)
+        self.canvas = FigureCanvasTkAgg(self.fig, master=self.tab_dash)
+        self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=4)
+        # initial date reference
+        self._dash_ref_date = date.today()
+        self._dash_year = self._dash_ref_date.year
+        self._dash_month = self._dash_ref_date.month
 
     #----- Utility Methods -----
     def get_preset_seconds(self) -> int:
@@ -199,6 +246,7 @@ class App:
             self.tag_combo["values"] = self.tags
             self._save_tags()
         self.tag_var.set(t)
+        self._refresh_dashboard()
 
     def delete_tag(self):
         t = self._normalize_tag(self.tag_var.get())
@@ -213,6 +261,7 @@ class App:
             self.tag_combo["values"] = self.tags
             self.tag_var.set(self.tags[0])
             self._save_tags()
+            self._refresh_dashboard()
 
     #----- Timer Callbacks -----
     def _on_tick(self, remaining: int) -> None:
@@ -242,7 +291,7 @@ class App:
         self.timer.reset(seconds=self.get_preset_seconds())
         self._on_tick(self.timer.remaining)
 
-    #----- Event Handlers -----
+    #----- Event Handlers for Timer-----
     def _on_preset_changed(self, *args) -> None:
         # only update timer if not running
         if not self.timer.running:
@@ -261,9 +310,14 @@ class App:
     
         now = self._now_ts()
         if not self._session_active:
-            self.tag_var.set(self._ensure_tag_registered(self.tag_var.get()))
-            # Captures current tag and note when first Start is pressed
-            self._current_tag = self.tag_var.get().strip() or "Other"
+            t = self._normalize_tag(self.tag_var.get()) or "Other"
+            if t not in self.tags:
+                self.tags.append(t)
+                self.tag_combo["values"] = self.tags
+                self._save_tags()
+            self.tag_var.set(t)
+
+            self._current_tag = t
             self._current_note = self.note_text.get("1.0", "end").strip()
             self._current_start_ts = now
 
@@ -277,7 +331,6 @@ class App:
 
         self.timer.start(self.root)
         self._set_buttons_state(running=True)
-
 
     def on_pause(self):
         if self.timer.running:
@@ -327,7 +380,7 @@ class App:
         self.btn_finish.config(state="normal" if running else "disabled")
 
 
-    #----- Session Recording -----
+    #----- Session Recording + refresh dashboard -----
     def _finalize_session(self, auto: bool):
         """
         Creates a session record with:
@@ -380,6 +433,76 @@ class App:
         self._current_note = ""
         self._accum_active_s = 0
         self._last_run_start_ts = None
+
+        self._refresh_dashboard()
+
+    #----- Dashboard -----
+    def _prev_period(self):
+        if self.period_var.get() == "Week":
+            self._dash_ref_date -= timedelta(days=7)
+        else:
+            y, m = self._dash_year, self._dash_month
+            if m == 1:
+                y, m = y - 1, 12
+            else:
+                m -= 1
+            self._dash_year, self._dash_month = y, m
+        self._refresh_dashboard()
+
+    def _next_period(self):
+        if self.period_var.get() == "Week":
+            self._dash_ref_date += timedelta(days=7)
+        else:
+            y, m = self._dash_year, self._dash_month
+            if m == 12:
+                y, m = y + 1, 1
+            else:
+                m += 1
+            self._dash_year, self._dash_month = y, m
+        self._refresh_dashboard()
+
+    def _refresh_dashboard(self):
+        # load sessions
+        self.sessions = load_sessions()
+
+        period = self.period_var.get()
+        if period == "Week":
+            totals, label = weekly_totals_by_tag(self.sessions, self._dash_ref_date)
+        else:
+            totals, label = monthly_totals_by_tag(self.sessions, self._dash_year, self._dash_month)
+
+        self.range_label_var.set(f"{period}: {label}")
+
+        # draw bar chart
+        self.ax.cla()
+        if not totals:
+            self.ax.text(0.5, 0.5, "No data", ha="center", va="center", fontsize=12)
+            self.ax.set_xticks([])
+            self.ax.set_yticks([])
+        else:
+            tags = list(totals.keys())
+            mins = [totals[t] for t in tags]
+            x = range(len(tags))
+            self.ax.bar(x, mins)                 
+            self.ax.set_xticks(list(x))
+            self.ax.set_xticklabels(tags, rotation=20, ha="right")
+            self.ax.set_ylabel("Minutes")
+            self.ax.set_title("Time Spent by Tag")
+            # add value labels
+            for i, v in enumerate(mins):
+                self.ax.text(i, v, f"{v:.1f}", ha="center", va="bottom", fontsize=9)
+            # total
+            total_min = round(sum(mins), 1)
+            total_hr = total_min / 60.0
+            self.ax.text(0.98, 0.94, f"Total: {total_min:.1f} min ({total_hr:.2f} h)",
+                        transform=self.ax.transAxes, ha="right", va="top")
+            # grid lines
+            self.ax.grid(axis="y", linestyle="--", alpha=0.4)
+        
+        self.fig.tight_layout()
+        self.canvas.draw()
+
+
 
 def main():
     root = tk.Tk()

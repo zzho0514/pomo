@@ -1,2 +1,5 @@
-start_ts,end_ts,duration_s,tag,note,date
+start_ts,end_ts,duration_s,tag,note,date,ended_by
 1761974409,1761974430,20,Math,1234,2025-11-01,auto
+1761988770,1761988814,32,Reading,dhsif,2025-11-01,auto
+1761993578,1761993601,20,English,1234567,2025-11-01,auto
+1761995806,1761995822,16,Math,,2025-11-01,manual
