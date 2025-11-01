@@ -4,5 +4,12 @@
   "long_break_min": 15,
   "long_every": 4,
   "default_tag": "Reading",
-  "theme": "light"
+  "theme": "light",
+  "tags": [
+    "Reading",
+    "Work",
+    "Health",
+    "Other",
+    "Math"
+  ]
 }

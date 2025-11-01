@@ -2,15 +2,27 @@
 import tkinter as tk
 from tkinter import ttk, messagebox
 import time
-from datetime import datetime, date
+from datetime import datetime
 from timer import Timer
+from storage import (
+    ensure_data_files, load_config, save_config,
+    append_session, load_sessions
+)
 
-APP_TITLE = "Pomotask (MVP - Phase 2.1)"
+APP_TITLE = "Pomotask (MVP - Phase 3)"
 
-DEFAULT_MIN = 25 # default minutes for Pomodoro
-DEFAULT_SEC = 0 # default seconds for Pomodoro
-
-DEFAULT_TAGS = ["Read", "Study", "Work", "Health", "Other"] # default tags for tasks
+# Default Settings
+DEFAULT_CONFIG = {
+    "work_min": 25,
+    "short_break_min": 5,
+    "long_break_min": 15,
+    "long_every": 4,
+    "theme": "light",
+    "default_tag": "Reading",
+    "tags": ["Reading", "Work", "Health", "Other"]
+}
+DEFAULT_MIN = 25
+DEFAULT_SEC = 0
 
 class App:
     def __init__(self, root: tk.Tk):
@@ -20,8 +32,17 @@ class App:
         self.root.title(APP_TITLE)
         self.root.geometry("720x600")
 
-        # State variables
-        self.sessions = [] # list[dict]  # stored sessions
+        #----- Data/Configuration Initialization -----
+        ensure_data_files(DEFAULT_CONFIG)
+        self.config = load_config()
+        # tags from config or default
+        self.tags = list(self.config.get("tags", DEFAULT_CONFIG["tags"]))
+        if not self.tags:
+            self.tags = list(DEFAULT_CONFIG["tags"])
+
+        self.sessions = load_sessions()        
+
+        #----- State variables ----- 
         self._current_start_ts = None    # current session start timestamp
         self._current_tag = None         # current session tag
         self._current_note = ""          # current session note
@@ -62,14 +83,21 @@ class App:
         cfrm.pack(padx=10, pady=10, fill="x")
 
         tk.Label(cfrm, text="Tag:").grid(row=0, column=0, sticky="e", padx=(0, 6))
-        self.tag_var = tk.StringVar(value=DEFAULT_TAGS[0])
-        self.tag_combo = ttk.Combobox(cfrm, textvariable=self.tag_var,
-                                      values=DEFAULT_TAGS, state="readonly", width=16)
+        self.tag_var = tk.StringVar(value=self.tags[0])
+        self.tag_combo = ttk.Combobox(
+            cfrm, textvariable=self.tag_var, values=self.tags,
+            state="normal", width=22   # allow typing new tags
+        )
         self.tag_combo.grid(row=0, column=1, sticky="w")
 
+        self.btn_add_tag = ttk.Button(cfrm, text="Add Tag", command=self.add_tag)
+        self.btn_add_tag.grid(row=0, column=2, padx=6)
+        self.btn_del_tag = ttk.Button(cfrm, text="Delete", command=self.delete_tag)
+        self.btn_del_tag.grid(row=0, column=3)
+
         tk.Label(cfrm, text="Note:").grid(row=1, column=0, sticky="ne", padx=(0, 6), pady=(8,0))
-        self.note_text = tk.Text(cfrm, width=40, height=3)
-        self.note_text.grid(row=1, column=1, sticky="w", pady=(8,0))
+        self.note_text = tk.Text(cfrm, width=44, height=3)
+        self.note_text.grid(row=1, column=1, columnspan=3, sticky="w", pady=(8,0))
 
         # buttons
         bfrm = tk.Frame(root)
@@ -88,11 +116,11 @@ class App:
         self.root.bind("<space>", self._toggle_start_pause)  # space start/pause
         self.root.bind("<Escape>", lambda e: self.on_reset())  # ESC reset
         self.root.bind("<Return>", lambda e: self.on_finish() if self.timer.running else None)  # Enter finish
-
+        
+        # Last Session Preview
         prev_box = tk.LabelFrame(root, text="Last Session", padx=10, pady=8)
         prev_box.pack(padx=10, pady=8, fill="both", expand=False)
-
-        # Last Session Preview
+        
         self.last_session_var = tk.StringVar(value="(no session yet)")
         tk.Label(
             prev_box,
@@ -140,6 +168,51 @@ class App:
     def _date_str(self, ts: float) -> str:
         # Converts Unix timestamp to "YYYY-MM-DD" format
         return datetime.fromtimestamp(ts).strftime("%Y-%m-%d")
+    
+    #----- Tag Management -----
+    def _normalize_tag(self, t: str) -> str:
+        t = (t or "").strip()
+        return t[:30] if t else ""
+
+    def _save_tags(self):
+        self.config["tags"] = self.tags
+        try:
+            save_config(self.config)
+        except Exception as e:
+            messagebox.showwarning("Save tags failed", str(e))
+
+    def _ensure_tag_registered(self, t: str) -> str:
+        t = self._normalize_tag(t) or "Other"
+        if t not in self.tags:
+            self.tags.append(t)
+            self.tag_combo["values"] = self.tags
+            self._save_tags()  # save updated tags
+        return t
+    
+    def add_tag(self):
+        t = self._normalize_tag(self.tag_var.get())
+        if not t:
+            messagebox.showwarning("Invalid tag", "Tag cannot be empty.")
+            return
+        if t not in self.tags:
+            self.tags.append(t)
+            self.tag_combo["values"] = self.tags
+            self._save_tags()
+        self.tag_var.set(t)
+
+    def delete_tag(self):
+        t = self._normalize_tag(self.tag_var.get())
+        if not t:
+            return
+        # prevent deleting tag in active session
+        if self._session_active and t == (self._current_tag or ""):
+            messagebox.showwarning("Cannot delete", "This tag is used by the active session.")
+            return
+        if t in self.tags and len(self.tags) > 1:
+            self.tags.remove(t)
+            self.tag_combo["values"] = self.tags
+            self.tag_var.set(self.tags[0])
+            self._save_tags()
 
     #----- Timer Callbacks -----
     def _on_tick(self, remaining: int) -> None:
@@ -185,13 +258,15 @@ class App:
     def on_start(self):
         if self.timer.running:
             return
-        
+    
         now = self._now_ts()
         if not self._session_active:
-        # Captures current tag and note when first Start is pressed
+            self.tag_var.set(self._ensure_tag_registered(self.tag_var.get()))
+            # Captures current tag and note when first Start is pressed
             self._current_tag = self.tag_var.get().strip() or "Other"
             self._current_note = self.note_text.get("1.0", "end").strip()
             self._current_start_ts = now
+
             self._accum_active_s = 0
             self._last_run_start_ts = now
             self._session_active = True
@@ -234,7 +309,7 @@ class App:
         self.timer.reset(seconds=self.get_preset_seconds())
         self._on_tick(self.timer.remaining)
         self._set_buttons_state(running=False)
-
+        # Clear current session snapshot
         self._session_active = False
         self._current_start_ts = None
         self._current_tag = None
@@ -277,15 +352,18 @@ class App:
             "date": self._date_str(end_ts),
             "ended_by": "auto" if auto else "manual"
         }
+
         self.sessions.append(session)
+        try:
+            append_session(session)
+        except Exception as e:
+            messagebox.showwarning("Write session failed", str(e))
       
         # Update last session preview
         def _clean_one_line(text: str, max_len: int = 120) -> str:
-            t = " ".join((text or "").split())  # collapse whitespace
+            t = " ".join((text or "").split())
             return (t[: max_len - 1] + "…") if len(t) > max_len else t
-
         note_line = _clean_one_line(session["note"])
-
         mm, ss = divmod(duration_s, 60)
         preview = (
             f"- Tag: {session['tag']}\n"
@@ -302,7 +380,6 @@ class App:
         self._current_note = ""
         self._accum_active_s = 0
         self._last_run_start_ts = None
-
 
 def main():
     root = tk.Tk()
