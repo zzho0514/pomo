@@ -11,6 +11,7 @@ DATA_DIR = ROOT_DIR / "data"
 CONFIG_PATH = DATA_DIR / "config.json"
 SESSIONS_CSV = DATA_DIR / "sessions.csv"
 GOALS_PATH = DATA_DIR / "goals.json"
+MILESTONES_PATH = DATA_DIR / "milestones.json"
 
 #----- Data statistics -----
 # CSV fields
@@ -32,12 +33,18 @@ def ensure_data_files(default_config: Dict[str, Any]) -> None:
     if not GOALS_PATH.exists():
         save_goals({"weekly": {}, "monthly": {}})
 
+    # milestones.json
+    if not MILESTONES_PATH.exists():
+        with MILESTONES_PATH.open("w", encoding="utf-8") as f:
+            json.dump({"countdown": [], "since": []}, f, ensure_ascii=False, indent=2)
+
     # sessions.csv： create with header if not existing or empty
     if not SESSIONS_CSV.exists() or SESSIONS_CSV.stat().st_size == 0:
         with SESSIONS_CSV.open("w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=CSV_FIELDS)
             writer.writeheader()
 
+#----- Goals -----
 def load_goals() -> Dict[str, Any]:
     default = {"weekly": {}, "monthly": {}}
     if GOALS_PATH.exists():
@@ -66,6 +73,7 @@ def save_goals(goals: Dict[str, Any]) -> None:
     with GOALS_PATH.open("w", encoding="utf-8") as f:
         json.dump(goals, f, ensure_ascii=False, indent=2)
 
+#----- Config -----
 def load_config() -> Dict[str, Any]:
     if CONFIG_PATH.exists():
         with CONFIG_PATH.open("r", encoding="utf-8") as f:
@@ -76,6 +84,7 @@ def save_config(cfg: Dict[str, Any]) -> None:
     with CONFIG_PATH.open("w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
+#----- Session records -----
 def append_session(session: Dict[str, Any]) -> None:
     """
     append a session record to sessions.csv.
@@ -102,3 +111,19 @@ def load_sessions() -> List[Dict[str, Any]]:
             r["duration_s"]= int(r.get("duration_s",0) or 0)
             out.append(r)
         return out
+
+#----- Milestones (countdown/since) -----
+def load_milestones() -> Dict[str, Any]:
+    if MILESTONES_PATH.exists():
+        with MILESTONES_PATH.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+            # normalize
+            return {
+                "countdown": list(data.get("countdown", [])),
+                "since": list(data.get("since", [])),
+            }
+    return {"countdown": [], "since": []}
+
+def save_milestones(m: Dict[str, Any]) -> None:
+    with MILESTONES_PATH.open("w", encoding="utf-8") as f:
+        json.dump(m, f, ensure_ascii=False, indent=2)

@@ -42,7 +42,7 @@ class TimerTab:
         pfrm = tk.Frame(self.frame); pfrm.pack(pady=8)
         tk.Label(pfrm, text="Minutes:").grid(row=0, column=0, sticky="e", padx=(0, 6))
         self.min_var = tk.IntVar(value=DEFAULT_MIN)
-        tk.Spinbox(pfrm, from_=0, to=180, width=4,
+        tk.Spinbox(pfrm, from_=0, to=999, width=4,
                    textvariable=self.min_var, font=("Segoe UI", 12)).grid(row=0, column=1, padx=(0, 12))
         tk.Label(pfrm, text="Seconds:").grid(row=0, column=2, sticky="e", padx=(0, 6))
         self.sec_var = tk.IntVar(value=DEFAULT_SEC)
@@ -131,7 +131,10 @@ class TimerTab:
         self._set_phase("work")
 
     def _set_phase(self, phase: str):
-        """Switch to a Pomodoro phase (work/short/long) and reset timer length."""
+        """
+        Switch to a Pomodoro phase (work/short/long) 
+        and reset timer length.
+        """
         self._pomo_phase = phase
         conf = self.state.config
         mins = {
@@ -159,7 +162,7 @@ class TimerTab:
         except Exception: m = DEFAULT_MIN
         try: s = int(self.sec_var.get())
         except Exception: s = DEFAULT_SEC
-        m = max(0, min(180, m)); s = max(0, min(59, s))
+        m = max(0, min(999, m)); s = max(0, min(59, s))
         return max(1, m*60 + s)
 
     def _normalize_tag(self, t: str) -> str:

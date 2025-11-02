@@ -26,10 +26,18 @@ pip install matplotlib numpy
 python main.py
 ```
 
-The Pomotask window will appear with two tabs:
+The Pomotask window will appear with these tabs:
 
-- Timer – start a study timer, add notes, and end sessions.
-- Dashboard – view your weekly/monthly statistics and goal progress.
+- Timer – start a study timer, add notes, and end sessions.  
+  - Enable Pomodoro auto mode: (Work (25min) - Short break (5min)) * 4 + Long break (15min)
+  - Normal mode: Custom countdown duration
+- Dashboard
+  - view your weekly/monthly statistics
+  - Set goals and view goal progress
+- Milestones
+  - add countdowns and anniversaries
+  - shows “X days left / Y days since”
+  - After editing (or add/delete), Click "Save All"
 
 ## Note for Tutor
 

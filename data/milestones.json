@@ -1,4 +1,14 @@
-[
-  {"name":"Final Exam","date":"2025-11-29","type":"until"},
-  {"name":"Started Studying","date":"2025-08-04","type":"since"}
-]
+{
+  "countdown": [
+    {
+      "title": "Final exam",
+      "date": "2025-11-28"
+    }
+  ],
+  "since": [
+    {
+      "title": "25S2 start",
+      "date": "2025-8-4"
+    }
+  ]
+}
