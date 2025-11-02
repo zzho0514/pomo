@@ -31,6 +31,13 @@ class TimerTab:
         self.time_var = tk.StringVar(value=f"{DEFAULT_MIN:02d}:{DEFAULT_SEC:02d}")
         tk.Label(self.frame, textvariable=self.time_var, font=("Consolas", 52, "bold")).pack(pady=6)
 
+         # ------- Pomodoro Auto Mode toggle -------
+        self.auto_mode = tk.BooleanVar(value=False)
+        self.chk_auto = ttk.Checkbutton(
+            self.frame, text="Enable Pomodoro Auto Mode", variable=self.auto_mode,
+            command=self._on_auto_mode_toggled)
+        self.chk_auto.pack(pady=(0, 8))
+
         # ------- presets (minutes + seconds) -------
         pfrm = tk.Frame(self.frame); pfrm.pack(pady=8)
         tk.Label(pfrm, text="Minutes:").grid(row=0, column=0, sticky="e", padx=(0, 6))
@@ -103,6 +110,47 @@ class TimerTab:
         self._last_run_start_ts: Optional[float] = None
         self._accum_active_s: int = 0
 
+        # --- Pomodoro Auto Mode state ---
+        self._pomo_phase = "work"  # "work" | "short" | "long"
+        self._pomo_cycle_count = 0
+
+    # ---------- Pomodoro Auto Mode ----------
+    def _on_auto_mode_toggled(self):
+        """Enable/disable auto mode UI behavior."""
+        if self.auto_mode.get():
+            self.min_var.set(self.state.config.get("work_min", 25))
+            self.sec_var.set(0)
+            # tokens for enabling/disabling Variable traces
+            self._trace_min_id = self.min_var.trace_add("write", lambda *args: self._on_preset_changed())
+            self._trace_sec_id = self.sec_var.trace_add("write", lambda *args: self._on_preset_changed())
+
+        else:
+            # Allow manual preset editing again
+            self.min_var.trace_add("write", self._on_preset_changed)
+            self.sec_var.trace_add("write", self._on_preset_changed)
+        self._set_phase("work")
+
+    def _set_phase(self, phase: str):
+        """Switch to a Pomodoro phase (work/short/long) and reset timer length."""
+        self._pomo_phase = phase
+        conf = self.state.config
+        mins = {
+            "work": conf.get("work_min", 25),
+            "short": conf.get("short_break_min", 5),
+            "long": conf.get("long_break_min", 15)
+        }.get(phase, 25)
+        if self.auto_mode.get():
+            self.timer.reset(seconds=int(mins * 60))
+            self._on_tick(self.timer.remaining)
+            title = {"work":"Work", "short":"Short Break", "long":"Long Break"}[phase]
+            self.time_var.set(f"{mins:02d}:00")
+            self._update_title(title)
+
+    def _update_title(self, phase_name: str):
+        """Change window title text according to phase."""
+        root = self.frame.winfo_toplevel()
+        root.title(f"Pomotask — {phase_name}")
+
     # ---------- helpers ----------
     def _now(self) -> float: return time.time()
 
@@ -161,6 +209,24 @@ class TimerTab:
             pass
         self.timer.reset(seconds=self._preset_seconds())
         self._on_tick(self.timer.remaining)
+
+    # --- Auto Mode transition ---
+    def _advance_pomodoro_cycle(self):
+        """Advance to next Pomodoro phase automatically."""
+        conf = self.state.config
+        long_every = int(conf.get("long_every", 4))
+
+        if self._pomo_phase == "work":
+            self._pomo_cycle_count += 1
+            if self._pomo_cycle_count % long_every == 0:
+                self._set_phase("long")
+            else:
+                self._set_phase("short")
+        else:
+            self._set_phase("work")
+
+        # auto start next phase
+        self.on_start()
 
     # ---------- events ----------
     def _on_preset_changed(self, *args):
