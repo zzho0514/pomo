@@ -1,10 +1,10 @@
 {
   "weekly": {
     "English": 50,
-    "Health": 10,
-    "Math": 10,
-    "Reading": 20,
-    "Work": 999
+    "Health": 240,
+    "Math": 300,
+    "Reading": 300,
+    "Work": 50
   },
   "monthly": {}
 }

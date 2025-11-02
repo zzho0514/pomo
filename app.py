@@ -15,7 +15,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 
 
-APP_TITLE = "Pomotask (MVP - Phase 4)"
+APP_TITLE = "Pomotask (MVP - Phase 4.1)"
 
 # Default Settings
 DEFAULT_CONFIG = {
@@ -36,7 +36,7 @@ class App:
         # main window
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("960x880")
+        self.root.geometry("960x880") # width x height
 
         #----- Data/Configuration Initialization -----
         ensure_data_files(DEFAULT_CONFIG)
