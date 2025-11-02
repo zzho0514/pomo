@@ -166,43 +166,74 @@ class App:
 
     #----- dashboard UI -----
     def _build_dashboard_tab(self):
+        """
+        Build the Dashboard tab: period controls, 
+        goals panel (scrollable), and chart area.
+        """
+        # --- Top controls: period toggles and prev/next ---
         ctrl = tk.Frame(self.tab_dash)
         ctrl.pack(fill="x", padx=10, pady=8)
-        # week/month switch
+
         tk.Label(ctrl, text="Period:").pack(side="left")
         self.period_var = tk.StringVar(value="Week")
         ttk.Radiobutton(ctrl, text="Week", variable=self.period_var, value="Week",
                         command=self._refresh_dashboard).pack(side="left", padx=6)
         ttk.Radiobutton(ctrl, text="Month", variable=self.period_var, value="Month",
                         command=self._refresh_dashboard).pack(side="left", padx=6)
-        
-        # next/prev period
+
         self.btn_prev = ttk.Button(ctrl, text="◀ Prev", command=self._prev_period)
         self.btn_next = ttk.Button(ctrl, text="Next ▶", command=self._next_period)
         self.btn_next.pack(side="right", padx=4)
         self.btn_prev.pack(side="right", padx=4)
 
-        # goal management
+        # --- Goals header row (title + Manage button) ---
         gbar = tk.Frame(self.tab_dash)
-        gbar.pack(fill="x", padx=10, pady=(0,4))
+        gbar.pack(fill="x", padx=10, pady=(0, 4))
         tk.Label(gbar, text="Goals", font=("Segoe UI", 11, "bold")).pack(side="left")
-
         self.btn_manage_goals = ttk.Button(gbar, text="Manage Goals", command=self._open_goals_dialog)
         self.btn_manage_goals.pack(side="right")
-            # goals container
-        self.goals_container = tk.Frame(self.tab_dash)
-        self.goals_container.pack(fill="x", padx=10, pady=(0,4))
-        
-        # label
+
+        # --- Scrollable goals container (fixed height so it won't squash the chart) ---
+        # Use a Canvas+Scrollbar to host a Frame; the inner frame will hold goal rows.
+        gwrap = tk.Frame(self.tab_dash)
+        gwrap.pack(fill="x", padx=10, pady=(0, 4))
+
+        self.goals_canvas = tk.Canvas(
+            gwrap,
+            height=140,          # <- fixed height; adjust if you prefer taller/shorter goals area
+            highlightthickness=0
+        )
+        self.goals_scrollbar = ttk.Scrollbar(gwrap, orient="vertical", command=self.goals_canvas.yview)
+        self.goals_container = tk.Frame(self.goals_canvas)
+
+        # Whenever inner frame resizes, update the canvas scrollregion.
+        self.goals_container.bind(
+            "<Configure>",
+            lambda e: self.goals_canvas.configure(scrollregion=self.goals_canvas.bbox("all"))
+        )
+
+        # Create a window item on canvas that holds the frame.
+        self._goals_window_id = self.goals_canvas.create_window(
+            (0, 0), window=self.goals_container, anchor="nw"
+        )
+        self.goals_canvas.configure(yscrollcommand=self.goals_scrollbar.set)
+
+        # Layout: canvas expands to width, scrollbar on the right.
+        self.goals_canvas.pack(side="left", fill="x", expand=True)
+        self.goals_scrollbar.pack(side="right", fill="y")
+
+        # --- Range label (current period title) ---
         self.range_label_var = tk.StringVar(value="")
         tk.Label(self.tab_dash, textvariable=self.range_label_var,
-                 font=("Segoe UI", 12, "bold")).pack(pady=(0,4))
-        # matplotlib figure
+                font=("Segoe UI", 12, "bold")).pack(pady=(0, 4))
+
+        # --- Matplotlib figure and canvas (chart area) ---
         self.fig = Figure(figsize=(7.8, 4.8), dpi=100)
         self.ax = self.fig.add_subplot(111)
         self.canvas = FigureCanvasTkAgg(self.fig, master=self.tab_dash)
         self.canvas.get_tk_widget().pack(fill="both", expand=True, padx=10, pady=4)
-        # initial date reference
+
+        # --- Cursor state for dashboard paging ---
         self._dash_ref_date = date.today()
         self._dash_year = self._dash_ref_date.year
         self._dash_month = self._dash_ref_date.month
@@ -533,52 +564,70 @@ class App:
         return totals, label
 
     def _refresh_goals_panel(self):
-        """refresh progress bars"""
-        # clear existing
+        """
+        Rebuild the goals progress list.
+        - Show ONLY tags that have a goal configured for the current period.
+        - The container is a scrollable frame so it won't squash the chart when there are many goals.
+        """
+        # Clear existing goal rows
         for w in self.goals_container.winfo_children():
             w.destroy()
 
+        # Get current period totals (minutes as float) and select the correct goal map
         totals, _ = self._current_period_totals()  # {tag: minutes(float)}
-        period = self.period_var.get()  # "Week" or "Month"
-        goal_map = self.goals["weekly" if period == "Week" else "monthly"]  # dict[tag] = minutes(int)
+        period = self.period_var.get()             # "Week" or "Month"
+        goal_map = self.goals["weekly" if period == "Week" else "monthly"]  # {tag: minutes(int)}
 
-        # header
-        header = tk.Frame(self.goals_container)
-        header.pack(fill="x", pady=(2,2))
-        tk.Label(header, text="Tag", width=16, anchor="w").pack(side="left")
-        tk.Label(header, text="Progress", anchor="w").pack(side="left", padx=(6,0))
-
-        tag_set = set(goal_map.keys()) | set(totals.keys()) | set(self.tags)
-        if not tag_set:
-            tk.Label(self.goals_container, text="No tags / goals yet. Click 'Manage Goals' to add.",
-                    fg="#666").pack(anchor="w")
+        # If there are no goals set for this period, show a friendly hint and return
+        if not goal_map:
+            tk.Label(
+                self.goals_container,
+                text="No goals set for this period. Click 'Manage Goals' to add goals.",
+                fg="#666"
+            ).pack(anchor="w", pady=(4, 4))
+            # Ensure scrollregion is up-to-date (in case we previously had rows)
+            self.goals_canvas.configure(scrollregion=self.goals_canvas.bbox("all"))
             return
 
-        # rows for each tag
-        for tag in sorted(tag_set):
+        # Header row
+        header = tk.Frame(self.goals_container)
+        header.pack(fill="x", pady=(2, 2))
+        tk.Label(header, text="Tag", width=16, anchor="w").pack(side="left")
+        tk.Label(header, text="Progress", anchor="w").pack(side="left", padx=(6, 0))
+
+        # Only iterate tags that actually have a configured goal
+        for tag, goal_min in sorted(goal_map.items()):
+            # Skip non-positive goals (treat as "not set")
+            if not isinstance(goal_min, (int, float)) or goal_min <= 0:
+                continue
+
             row = tk.Frame(self.goals_container)
             row.pack(fill="x", pady=2)
 
             tk.Label(row, text=tag, width=16, anchor="w").pack(side="left")
 
-            # done vs goal
+            # Completed minutes in current period for this tag
             done_min = float(totals.get(tag, 0.0))
-            goal_min = int(goal_map.get(tag, 0))  # 0 means no goal
 
-            # progress bar 
             inner = tk.Frame(row)
             inner.pack(side="left", fill="x", expand=True)
 
-            if goal_min > 0:
-                bar = ttk.Progressbar(inner, orient="horizontal", length=300, mode="determinate",
-                                    maximum=goal_min, value=min(done_min, goal_min))
-                bar.pack(side="left", padx=(0,6))
-                pct = 100.0 * done_min / goal_min
-                tk.Label(inner, text=f"{done_min:.1f} / {goal_min} min  ({pct:.0f}%)",
-                        width=24, anchor="w").pack(side="left")
-            else:
-                # no goal set
-                tk.Label(inner, text=f"{done_min:.1f} min (no goal)", anchor="w").pack(side="left")
+            # Progressbar uses minutes as "maximum" and "value"
+            bar = ttk.Progressbar(
+                inner, orient="horizontal", length=300, mode="determinate",
+                maximum=float(goal_min), value=min(done_min, float(goal_min))
+            )
+            bar.pack(side="left", padx=(0, 6))
+
+            pct = (100.0 * done_min / float(goal_min)) if float(goal_min) > 0 else 0.0
+            tk.Label(
+                inner,
+                text=f"{done_min:.1f} / {float(goal_min):.0f} min  ({pct:.0f}%)",
+                width=24, anchor="w"
+            ).pack(side="left")
+
+        # Update scrollregion after rebuilding rows
+        self.goals_canvas.configure(scrollregion=self.goals_canvas.bbox("all"))
 
     # goals dialog
     def _open_goals_dialog(self):
