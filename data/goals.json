@@ -6,5 +6,7 @@
     "Reading": 300,
     "Work": 50
   },
-  "monthly": {}
+  "monthly": {
+    "English": 5
+  }
 }

@@ -1,86 +1,86 @@
 # main.py
 import tkinter as tk
 from tkinter import ttk
+from tkinter import font as tkfont
+import ctypes
+
 from app_state import AppState
 from ui_timer import TimerTab
 from ui_dashboard import DashboardTab
 from ui_milestones import MilestonesTab
 
-import ctypes
-from tkinter import font as tkfont
-
 def enable_dpi_awareness():
-    """Enable DPI awareness on Windows so Tk windows render sharply on high-DPI displays."""
+    """
+    Windows-only: enable per-monitor DPI awareness before creating Tk root.
+    Safe to no-op on other platforms.
+    """
     try:
-        # Try Per-Monitor v2 / v1, fall back to legacy SetProcessDPIAware
-        shcore = ctypes.windll.shcore
-        # PROCESS_PER_MONITOR_DPI_AWARE = 2
-        shcore.SetProcessDpiAwareness(2)
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)   # Per-monitor v2
     except Exception:
         try:
-            user32 = ctypes.windll.user32
-            user32.SetProcessDPIAware()
+            ctypes.windll.user32.SetProcessDPIAware()    # Legacy fallback
         except Exception:
             pass
 
-
-def center_window(window, width=1080, height=860):
-    """Center window on screen with given size"""
-    # Get screen dimensions
-    screen_width = window.winfo_screenwidth()
-    screen_height = window.winfo_screenheight()
-    
-    # Calculate position coordinates
-    x = (screen_width - width) // 2
-    y = (screen_height - height) // 2
-    
-    # Set window size and position
-    window.geometry(f"{width}x{height}+{x}+{y}")
-
-actual_ppi = 96.0
-def adjust_tk_scaling(root: tk.Tk):
+def get_screen_ppi(root: tk.Tk) -> float:
     """
-    Adjust Tk scaling based on actual pixels-per-inch so fonts/widgets are crisp.
-    Should be called *after* creating the root window.
+    Return physical pixels per inch for the current display.
+    This works cross-platform; Tk returns pixels in '1i' (1 inch).
     """
     try:
-        # Query pixels per inch
-        ppi = root.winfo_fpixels('1i')
-        '''
-        scale = ppi / 72.0  # 72 dpi = Tk default
+        return float(root.winfo_fpixels('1i'))
+    except Exception:
+        return 96.0  # safe default
+
+def apply_tk_scaling_and_fonts(root: tk.Tk, ppi: float):
+    """
+    Make all Tk/ttk text crisp by aligning Tk's internal scaling to the real PPI,
+    and setting consistent fonts across widgets.
+    """
+    # 1) Align Tk scaling (72 logical dpi is Tk's default)
+    try:
+        scale = max(0.5, min(ppi / 72.0, 4.0))  # clamp for safety
         root.tk.call('tk', 'scaling', scale)
-        '''
-        actual_ppi = float(ppi)
     except Exception:
         pass
 
-def main():
+    # 2) Set global fonts (Segoe UI is crisp on Windows; fallback is fine elsewhere)
     try:
-        enable_dpi_awareness()
-    except Exception:
-        pass
-    # main window
-    root = tk.Tk()
-    root.title("Pomotask")
-
-    # Adjust Tk scaling based on actual pixels-per-inch so fonts/widgets are crisp
-    adjust_tk_scaling(root)
-
-    # Tweak default fonts to a crisp system font (Segoe UI) and sensible sizes
-    try:
-        default_font = tkfont.nametofont("TkDefaultFont")
-        default_font.configure(family="Segoe UI", size=9)
-        for name, size in (("TkTextFont", 10), ("TkMenuFont", 9), ("TkHeadingFont", 11)):
+        base = tkfont.nametofont("TkDefaultFont")
+        base.configure(family="Segoe UI", size=10)
+        for name, size in (("TkTextFont", 10), ("TkMenuFont", 10), ("TkHeadingFont", 11)):
             try:
-                f = tkfont.nametofont(name)
-                f.configure(family="Segoe UI", size=size)
+                tkfont.nametofont(name).configure(family="Segoe UI", size=size)
             except Exception:
                 pass
     except Exception:
         pass
 
-    # Center window on screen
-    center_window(root)
+
+def center_window_relative(window: tk.Tk, rel_width: float = 0.6, rel_height: float = 0.7) -> None:
+    """
+    Center the window as a *percentage* of screen size.
+    Called after the first layout pass so Tk knows actual metrics (HD-safe).
+    """
+    window.update_idletasks()  # ensure Tk has computed widget sizes
+    sw, sh = window.winfo_screenwidth(), window.winfo_screenheight()
+    w = int(sw * rel_width)
+    h = int(sh * rel_height)
+    x = (sw - w) // 2
+    y = (sh - h) // 2
+    window.geometry(f"{w}x{h}+{x}+{y}")
+
+
+def main():
+    # Enable HD before Tk root
+    enable_dpi_awareness()
+    # main window
+    root = tk.Tk()
+    root.title("Pomotask")
+
+    # Detect PPI and apply crisp scaling + fonts globally
+    ppi = get_screen_ppi(root)
+    apply_tk_scaling_and_fonts(root, ppi)
 
     # Optional: light styling
     style = ttk.Style()
@@ -88,20 +88,30 @@ def main():
         style.theme_use("light")
     except Exception:
         pass
+    style.configure(".", font=("Segoe UI", 10))
     style.configure("TButton", padding=6)
     style.configure("TLabel", padding=2)
+
+    root.grid_rowconfigure(0, weight=1)
+    root.grid_columnconfigure(0, weight=1)
+    
+    # Center window on screen
+    # center_window(root)
 
     state = AppState()  # shared app state (config/goals/sessions)
 
     # tabs
     nb = ttk.Notebook(root)
     tab_timer = TimerTab(nb, state)
-    tab_dash  = DashboardTab(nb, state)
+    tab_dash  = DashboardTab(nb, state, ppi=ppi)    # pass PPI to the chart tab
     tab_miles = MilestonesTab(nb, state)
+
     nb.add(tab_timer.frame, text="Timer")
     nb.add(tab_dash.frame,  text="Dashboard")
     nb.add(tab_miles.frame, text="Milestones")
-    nb.pack(fill="both", expand=True)
+    # nb.pack(fill="both", expand=True)
+    nb.grid(row=0, column=0, sticky="nsew")
+    root.after_idle(lambda: center_window_relative(root, 0.6, 0.7))
 
     root.mainloop()
 
